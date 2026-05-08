@@ -162,6 +162,7 @@ func TestConfigValidate(t *testing.T) {
 }
 
 func TestConfigJSONRoundtrip(t *testing.T) {
+	smartRouting := true
 	original := hazelcast.Config{
 		Addresses:      []string{"hz-0:5701", "hz-1:5701"},
 		ClusterName:    "prod-cache",
@@ -171,7 +172,7 @@ func TestConfigJSONRoundtrip(t *testing.T) {
 		ReadTimeout:    50 * time.Millisecond,
 		WriteTimeout:   200 * time.Millisecond,
 		ConnectTimeout: 5 * time.Second,
-		SmartRouting:   true,
+		SmartRouting:   &smartRouting,
 		TLS: &hazelcast.TLSConfig{
 			CACertFile:         "/etc/certs/ca.pem",
 			CertFile:           "/etc/certs/client.pem",
