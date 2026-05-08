@@ -2,6 +2,8 @@ package hazelcast
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -48,6 +50,11 @@ var ErrNoAddresses = errors.New("hazelcast: at least one address must be configu
 func (c *Config) Validate() error {
 	if len(c.Addresses) == 0 {
 		return ErrNoAddresses
+	}
+	for i, addr := range c.Addresses {
+		if strings.TrimSpace(addr) == "" {
+			return fmt.Errorf("hazelcast: addresses[%d] is empty", i)
+		}
 	}
 	if c.ClusterName == "" {
 		c.ClusterName = defaultClusterName

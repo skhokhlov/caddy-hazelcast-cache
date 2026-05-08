@@ -24,6 +24,20 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: hazelcast.ErrNoAddresses,
 		},
 		{
+			name: "blank address rejected",
+			in: hazelcast.Config{
+				Addresses: []string{""},
+			},
+			anyErr: true,
+		},
+		{
+			name: "whitespace-only address rejected",
+			in: hazelcast.Config{
+				Addresses: []string{"hz-0:5701", "   "},
+			},
+			anyErr: true,
+		},
+		{
 			name: "defaults applied",
 			in: hazelcast.Config{
 				Addresses: []string{"hz-0:5701"},
