@@ -1,11 +1,13 @@
 package hazelcast
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	hzclient "github.com/hazelcast/hazelcast-go-client"
 	"github.com/hazelcast/hazelcast-go-client/logger"
 	"github.com/hazelcast/hazelcast-go-client/types"
+	"github.com/pierrec/lz4/v4"
 )
 
 // ErrNotInitialised is returned by write paths invoked before Init has
@@ -304,6 +307,91 @@ func (h *Hazelcast) ListKeys() []string {
 		}
 	}
 	return keys
+}
+
+// SetMultiLevel stores a varied response body (lz4-compressed) and updates
+// the IDX_<baseKey> mapping protobuf so subsequent GetMultiLevel calls can
+// elect the right variation by Vary headers and ETag.
+//
+// Hazelcast IMaps offer no multi-key transaction; the read-modify-write of
+// the mapping is therefore guarded with imap.Lock(IDX_<baseKey>) so 20
+// concurrent SetMultiLevel calls on the same baseKey converge to a mapping
+// containing all 20 variations rather than racing into a lost-update.
+func (h *Hazelcast) SetMultiLevel(baseKey, variedKey string, value []byte, variedHeaders http.Header, etag string, duration time.Duration, realKey string) error {
+	imap := h.activeMap()
+	if imap == nil {
+		return ErrNotInitialised
+	}
+	compressed, err := lz4Compress(value)
+	if err != nil {
+		return fmt.Errorf("hazelcast: lz4 compress %q: %w", variedKey, err)
+	}
+
+	ttl := duration + h.stale
+	ctx, cancel := h.opContext(h.cfg.WriteTimeout)
+	defer cancel()
+
+	if err := imap.SetWithTTL(ctx, variedKey, compressed, ttl); err != nil {
+		return fmt.Errorf("hazelcast: set varied %q: %w", variedKey, err)
+	}
+
+	mappingKey := core.MappingKeyPrefix + baseKey
+	if err := imap.Lock(ctx, mappingKey); err != nil {
+		return fmt.Errorf("hazelcast: lock %q: %w", mappingKey, err)
+	}
+	defer func() {
+		unlockCtx, cancelUnlock := h.opContext(h.cfg.WriteTimeout)
+		defer cancelUnlock()
+		_ = imap.Unlock(unlockCtx, mappingKey)
+	}()
+
+	var existing []byte
+	if raw, err := imap.Get(ctx, mappingKey); err == nil && raw != nil {
+		if b, ok := raw.([]byte); ok {
+			existing = b
+		}
+	}
+
+	now := time.Now()
+	updated, err := core.MappingUpdater(
+		variedKey,
+		existing,
+		noopCoreLogger{},
+		now,
+		now.Add(duration),
+		now.Add(duration+h.stale),
+		variedHeaders,
+		etag,
+		realKey,
+	)
+	if err != nil {
+		return fmt.Errorf("hazelcast: update mapping for %q: %w", baseKey, err)
+	}
+	if err := imap.SetWithTTL(ctx, mappingKey, updated, ttl); err != nil {
+		return fmt.Errorf("hazelcast: set mapping %q: %w", mappingKey, err)
+	}
+	return nil
+}
+
+func lz4Compress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	w := lz4.NewWriter(&buf)
+	if _, err := w.Write(data); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func lz4Decompress(data []byte) ([]byte, error) {
+	r := lz4.NewReader(bytes.NewReader(data))
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func (h *Hazelcast) activeMap() mapAPI {

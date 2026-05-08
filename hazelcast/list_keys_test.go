@@ -51,11 +51,11 @@ func TestListKeysDecodesMappingRealKeys(t *testing.T) {
 
 	// Build two mapping entries via core.MappingUpdater to seed the IMap.
 	now := time.Now()
-	bytesA, err := core.MappingUpdater("varied-A", nil, noopLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-A", "real-A")
+	bytesA, err := core.MappingUpdater("varied-A", nil, noopCoreLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-A", "real-A")
 	if err != nil {
 		t.Fatalf("MappingUpdater A: %v", err)
 	}
-	bytesB, err := core.MappingUpdater("varied-B", bytesA, noopLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-B", "real-B")
+	bytesB, err := core.MappingUpdater("varied-B", bytesA, noopCoreLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-B", "real-B")
 	if err != nil {
 		t.Fatalf("MappingUpdater B: %v", err)
 	}
@@ -86,20 +86,3 @@ func TestListKeysBeforeInitReturnsNil(t *testing.T) {
 	}
 }
 
-// noopLogger satisfies core.Logger with do-nothing methods.
-type noopLogger struct{}
-
-func (noopLogger) DPanic(args ...interface{})                       {}
-func (noopLogger) DPanicf(template string, args ...interface{})     {}
-func (noopLogger) Debug(args ...interface{})                        {}
-func (noopLogger) Debugf(template string, args ...interface{})      {}
-func (noopLogger) Error(args ...interface{})                        {}
-func (noopLogger) Errorf(template string, args ...interface{})      {}
-func (noopLogger) Fatal(args ...interface{})                        {}
-func (noopLogger) Fatalf(template string, args ...interface{})      {}
-func (noopLogger) Info(args ...interface{})                         {}
-func (noopLogger) Infof(template string, args ...interface{})       {}
-func (noopLogger) Panic(args ...interface{})                        {}
-func (noopLogger) Panicf(template string, args ...interface{})      {}
-func (noopLogger) Warn(args ...interface{})                         {}
-func (noopLogger) Warnf(template string, args ...interface{})       {}

@@ -12,12 +12,13 @@ import (
 // keyed by string and respects SetWithTTL expirations using a synthetic clock
 // based on time.Now (sufficient for unit-test latencies).
 type fakeMap struct {
-	mu      sync.Mutex
-	data    map[string]fakeEntry
-	getErr  error
-	setErr  error
-	rmErr   error
-	lockSeq []string // records lock/unlock pairs for assertions
+	mu       sync.Mutex
+	data     map[string]fakeEntry
+	getErr   error
+	setErr   error
+	rmErr    error
+	lockSeq  []string // records lock/unlock pairs for assertions
+	keyLocks map[string]*sync.Mutex
 }
 
 type fakeEntry struct {
@@ -96,16 +97,33 @@ func (f *fakeMap) Remove(_ context.Context, key any) (any, error) {
 }
 
 func (f *fakeMap) Lock(_ context.Context, key any) error {
+	k := key.(string)
 	f.mu.Lock()
-	f.lockSeq = append(f.lockSeq, "L:"+key.(string))
+	if f.keyLocks == nil {
+		f.keyLocks = map[string]*sync.Mutex{}
+	}
+	m, ok := f.keyLocks[k]
+	if !ok {
+		m = &sync.Mutex{}
+		f.keyLocks[k] = m
+	}
+	f.mu.Unlock()
+	m.Lock()
+	f.mu.Lock()
+	f.lockSeq = append(f.lockSeq, "L:"+k)
 	f.mu.Unlock()
 	return nil
 }
 
 func (f *fakeMap) Unlock(_ context.Context, key any) error {
+	k := key.(string)
 	f.mu.Lock()
-	f.lockSeq = append(f.lockSeq, "U:"+key.(string))
+	m := f.keyLocks[k]
+	f.lockSeq = append(f.lockSeq, "U:"+k)
 	f.mu.Unlock()
+	if m != nil {
+		m.Unlock()
+	}
 	return nil
 }
 

@@ -58,11 +58,11 @@ func TestListKeysIntegrationDecodesMapping(t *testing.T) {
 	t.Cleanup(func() { _ = h.Reset() })
 
 	now := time.Now()
-	bytesA, err := core.MappingUpdater("varied-A", nil, noopLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-A", "real-A")
+	bytesA, err := core.MappingUpdater("varied-A", nil, noopCoreLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-A", "real-A")
 	if err != nil {
 		t.Fatalf("MappingUpdater A: %v", err)
 	}
-	bytesB, err := core.MappingUpdater("varied-B", bytesA, noopLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-B", "real-B")
+	bytesB, err := core.MappingUpdater("varied-B", bytesA, noopCoreLogger{}, now, now.Add(time.Minute), now.Add(2*time.Minute), http.Header{}, "etag-B", "real-B")
 	if err != nil {
 		t.Fatalf("MappingUpdater B: %v", err)
 	}
