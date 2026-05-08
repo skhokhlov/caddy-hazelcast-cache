@@ -81,6 +81,35 @@ func TestBuildClientConfigOverrides(t *testing.T) {
 	}
 }
 
+func TestBuildClientConfigSmartRouting(t *testing.T) {
+	smartOn := true
+	smartOff := false
+	tests := []struct {
+		name         string
+		smartRouting *bool
+		wantUnisock  bool
+	}{
+		{name: "unset keeps hazelcast default (smart routing on)", smartRouting: nil, wantUnisock: false},
+		{name: "explicit true keeps smart routing on", smartRouting: &smartOn, wantUnisock: false},
+		{name: "explicit false switches to unisocket", smartRouting: &smartOff, wantUnisock: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Addresses:    []string{"hz-0:5701"},
+				SmartRouting: tt.smartRouting,
+			}
+			hzCfg, err := buildClientConfig(cfg)
+			if err != nil {
+				t.Fatalf("buildClientConfig: %v", err)
+			}
+			if got := hzCfg.Cluster.Unisocket; got != tt.wantUnisock {
+				t.Errorf("Unisocket: got %v, want %v", got, tt.wantUnisock)
+			}
+		})
+	}
+}
+
 func TestBuildClientConfigClonesAddresses(t *testing.T) {
 	addrs := []string{"hz-0:5701"}
 	cfg := &Config{Addresses: addrs}

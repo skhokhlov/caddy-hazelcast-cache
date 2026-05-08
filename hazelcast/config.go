@@ -23,7 +23,11 @@ type Config struct {
 	ReadTimeout    time.Duration `json:"read_timeout,omitempty"`
 	WriteTimeout   time.Duration `json:"write_timeout,omitempty"`
 	ConnectTimeout time.Duration `json:"connect_timeout,omitempty"`
-	SmartRouting   bool          `json:"smart_routing,omitempty"`
+	// SmartRouting toggles client-side smart routing. Nil means "use the
+	// upstream Hazelcast default" (smart routing enabled). Set to a pointer
+	// to false to switch the client into unisocket mode; pointer to true is
+	// equivalent to nil but explicit.
+	SmartRouting *bool `json:"smart_routing,omitempty"`
 }
 
 // TLSConfig describes how the client should authenticate the Hazelcast cluster

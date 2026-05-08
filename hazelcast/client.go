@@ -60,5 +60,8 @@ func buildClientConfig(cfg *Config) (hzclient.Config, error) {
 			Password: cfg.Password,
 		}
 	}
+	if cfg.SmartRouting != nil {
+		hzCfg.Cluster.Unisocket = !*cfg.SmartRouting
+	}
 	return hzCfg, nil
 }
