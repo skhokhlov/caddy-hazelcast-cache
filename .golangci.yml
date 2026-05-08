@@ -1,9 +1,15 @@
+version: "2"
+
 run:
-  timeout: 5m
   tests: true
+  # golangci-lint's "version used to build me" check reads the toolchain
+  # directive, not the go directive. Pin the analysis target to the language
+  # floor (matches go.mod) so v2 binaries built with Go 1.25 accept this
+  # module. Drop this once an upstream release is built with Go 1.26+.
+  go: "1.25"
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - gocritic
@@ -12,36 +18,30 @@ linters:
     - revive
     - staticcheck
     - unused
-
-linters-settings:
-  revive:
-    severity: warning
-    rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: package-comments
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: empty-block
-      - name: superfluous-else
-      - name: unused-parameter
-      - name: unreachable-code
-      - name: redefines-builtin-id
-
-issues:
-  exclude-use-default: false
-  max-issues-per-linter: 0
-  max-same-issues: 0
+  settings:
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
