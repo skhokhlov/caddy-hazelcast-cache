@@ -63,5 +63,16 @@ func buildClientConfig(cfg *Config) (hzclient.Config, error) {
 	if cfg.SmartRouting != nil {
 		hzCfg.Cluster.Unisocket = !*cfg.SmartRouting
 	}
+	tlsCfg, err := buildTLSConfig(cfg.TLS)
+	if err != nil {
+		return hzclient.Config{}, err
+	}
+	if tlsCfg != nil {
+		hzCfg.Cluster.Network.SSL.Enabled = true
+		if cfg.TLS != nil {
+			hzCfg.Cluster.Network.SSL.ServerName = cfg.TLS.ServerName
+		}
+		hzCfg.Cluster.Network.SSL.SetTLSConfig(tlsCfg)
+	}
 	return hzCfg, nil
 }
