@@ -309,6 +309,31 @@ func (h *Hazelcast) ListKeys() []string {
 	return keys
 }
 
+// GetMultiLevel fetches the IDX_<key> mapping bytes and delegates to
+// core.MappingElection, which performs Vary matching, ETag revalidation and
+// the actual body read (via h.Get) for the elected variation.
+//
+// Returns (nil, nil) if the mapping is missing, the IMap is unreachable, or
+// no variation matches; (fresh, nil) for a hit; (nil, stale) for a stale hit.
+func (h *Hazelcast) GetMultiLevel(key string, req *http.Request, validator *core.Revalidator) (*http.Response, *http.Response) {
+	imap := h.activeMap()
+	if imap == nil {
+		return nil, nil
+	}
+	ctx, cancel := h.opContext(h.cfg.ReadTimeout)
+	defer cancel()
+	raw, err := imap.Get(ctx, core.MappingKeyPrefix+key)
+	if err != nil || raw == nil {
+		return nil, nil
+	}
+	b, ok := raw.([]byte)
+	if !ok {
+		return nil, nil
+	}
+	fresh, stale, _ := core.MappingElection(h, b, req, validator, noopCoreLogger{})
+	return fresh, stale
+}
+
 // SetMultiLevel stores a varied response body (lz4-compressed) and updates
 // the IDX_<baseKey> mapping protobuf so subsequent GetMultiLevel calls can
 // elect the right variation by Vary headers and ETag.
@@ -431,5 +456,9 @@ func lookupInstance(uuid string) *Hazelcast {
 	return v.(*Hazelcast)
 }
 
-// Compile-time assertion that *hzclient.Client satisfies hzClient.
-var _ hzClient = (*hzclient.Client)(nil)
+// Compile-time assertions: *hzclient.Client satisfies hzClient, and the
+// Hazelcast provider satisfies the full core.Storer interface.
+var (
+	_ hzClient    = (*hzclient.Client)(nil)
+	_ core.Storer = (*Hazelcast)(nil)
+)
