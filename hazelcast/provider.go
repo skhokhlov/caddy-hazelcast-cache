@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/darkweak/storages/core"
 	hzclient "github.com/hazelcast/hazelcast-go-client"
 	"github.com/hazelcast/hazelcast-go-client/logger"
 	"github.com/hazelcast/hazelcast-go-client/types"
@@ -234,6 +236,74 @@ func (h *Hazelcast) DeleteMany(pattern string) {
 			_, _ = imap.Remove(ctx, s)
 		}
 	}
+}
+
+// MapKeys returns every entry whose key starts with prefix, with the prefix
+// stripped. Values are returned as strings; the caller is expected to know
+// whether the underlying bytes are textual (Souin treats mapping protobuf
+// bytes opaquely here, only feeding them back to DecodeMapping when needed).
+func (h *Hazelcast) MapKeys(prefix string) map[string]string {
+	out := map[string]string{}
+	imap := h.activeMap()
+	if imap == nil {
+		return out
+	}
+	ctx, cancel := h.opContext(h.cfg.ReadTimeout)
+	defer cancel()
+	entries, err := imap.GetEntrySet(ctx)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		k, ok := e.Key.(string)
+		if !ok || !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		b, ok := e.Value.([]byte)
+		if !ok {
+			continue
+		}
+		out[strings.TrimPrefix(k, prefix)] = string(b)
+	}
+	return out
+}
+
+// ListKeys walks the mapping index (IDX_* entries), decodes each protobuf
+// mapping and returns the RealKey of every variation it carries. Keys that
+// fail to decode are skipped — they are either stale or written by a future
+// schema and a subsequent SetMultiLevel will overwrite them.
+func (h *Hazelcast) ListKeys() []string {
+	imap := h.activeMap()
+	if imap == nil {
+		return nil
+	}
+	ctx, cancel := h.opContext(h.cfg.ReadTimeout)
+	defer cancel()
+	entries, err := imap.GetEntrySet(ctx)
+	if err != nil {
+		return nil
+	}
+	var keys []string
+	for _, e := range entries {
+		k, ok := e.Key.(string)
+		if !ok || !strings.HasPrefix(k, core.MappingKeyPrefix) {
+			continue
+		}
+		b, ok := e.Value.([]byte)
+		if !ok {
+			continue
+		}
+		mapper, err := core.DecodeMapping(b)
+		if err != nil || mapper == nil {
+			continue
+		}
+		for _, idx := range mapper.GetMapping() {
+			if rk := idx.GetRealKey(); rk != "" {
+				keys = append(keys, rk)
+			}
+		}
+	}
+	return keys
 }
 
 func (h *Hazelcast) activeMap() mapAPI {
