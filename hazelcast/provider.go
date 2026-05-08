@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/hazelcast/hazelcast-go-client/logger"
 	"github.com/hazelcast/hazelcast-go-client/types"
 )
+
+// ErrNotInitialised is returned by write paths invoked before Init has
+// connected the underlying client. Read paths return nil instead, matching
+// the core.Storer convention that Get is total.
+var ErrNotInitialised = errors.New("hazelcast: provider not initialised")
 
 // providerName is the storer identifier exposed to Souin via Name(). Kept as
 // a private constant so callers go through Name() rather than referencing the
@@ -145,6 +151,56 @@ func (h *Hazelcast) Reset() error {
 		return fmt.Errorf("hazelcast: shutting down client: %w", err)
 	}
 	return nil
+}
+
+// Get returns the bytes stored at key, or nil on miss, on transport error or
+// before Init. core.Storer.Get is total (no error return); failures degrade
+// to a miss so the caller path stays tight.
+func (h *Hazelcast) Get(key string) []byte {
+	imap := h.activeMap()
+	if imap == nil {
+		return nil
+	}
+	ctx, cancel := h.opContext(h.cfg.ReadTimeout)
+	defer cancel()
+	raw, err := imap.Get(ctx, key)
+	if err != nil || raw == nil {
+		return nil
+	}
+	if b, ok := raw.([]byte); ok {
+		return b
+	}
+	return nil
+}
+
+// Set stores value at key. The effective TTL is duration + the provider's
+// stale window, matching the convention used by the badger provider so the
+// shared MappingElection / revalidation logic in storages/core sees fresh +
+// stale entries with consistent expirations.
+func (h *Hazelcast) Set(key string, value []byte, duration time.Duration) error {
+	imap := h.activeMap()
+	if imap == nil {
+		return ErrNotInitialised
+	}
+	ctx, cancel := h.opContext(h.cfg.WriteTimeout)
+	defer cancel()
+	if err := imap.SetWithTTL(ctx, key, value, duration+h.stale); err != nil {
+		return fmt.Errorf("hazelcast: set %q: %w", key, err)
+	}
+	return nil
+}
+
+func (h *Hazelcast) activeMap() mapAPI {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.imap
+}
+
+func (h *Hazelcast) opContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 func initContext(cfg *Config) (context.Context, context.CancelFunc) {
