@@ -35,6 +35,16 @@ func (f *fakeMap) entryFor(key string) (fakeEntry, bool) {
 	return entry, ok
 }
 
+func (f *fakeMap) snapshot() map[string][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string][]byte, len(f.data))
+	for k, v := range f.data {
+		out[k] = append([]byte(nil), v.value...)
+	}
+	return out
+}
+
 func (f *fakeMap) Get(_ context.Context, key any) (any, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
