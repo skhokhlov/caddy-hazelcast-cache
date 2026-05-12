@@ -25,13 +25,14 @@ func (f *fakeMap) GetEntrySet(context.Context) ([]types.Entry, error)           
 type fakeClient struct {
 	mu        sync.Mutex
 	shutdowns int
+	err       error
 }
 
 func (f *fakeClient) Shutdown(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.shutdowns++
-	return nil
+	return f.err
 }
 
 func (f *fakeClient) shutdownCount() int {
@@ -47,7 +48,7 @@ func newProviderWithFake(t *testing.T, cfg *Config) (*Hazelcast, *fakeClient) {
 		t.Fatalf("New: %v", err)
 	}
 	fc := &fakeClient{}
-	h.connector = func(ctx context.Context, c *Config, l logger.Logger) (hzClient, mapAPI, error) {
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		return fc, &fakeMap{}, nil
 	}
 	t.Cleanup(func() { _ = h.Reset() })
@@ -107,7 +108,7 @@ func TestInitIdempotent(t *testing.T) {
 		MapName:     "m",
 	})
 	calls := 0
-	h.connector = func(ctx context.Context, c *Config, l logger.Logger) (hzClient, mapAPI, error) {
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		calls++
 		return &fakeClient{}, &fakeMap{}, nil
 	}
@@ -131,7 +132,7 @@ func TestInitConnectorErrorPropagates(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	boom := errors.New("hazelcast: boom")
-	h.connector = func(ctx context.Context, c *Config, l logger.Logger) (hzClient, mapAPI, error) {
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		return nil, nil, boom
 	}
 	if err := h.Init(); !errors.Is(err, boom) {
@@ -182,7 +183,7 @@ func TestProvisionAfterResetReconnects(t *testing.T) {
 		MapName:     "m",
 	})
 	calls := 0
-	h.connector = func(ctx context.Context, c *Config, l logger.Logger) (hzClient, mapAPI, error) {
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		calls++
 		return &fakeClient{}, &fakeMap{}, nil
 	}
@@ -200,5 +201,140 @@ func TestProvisionAfterResetReconnects(t *testing.T) {
 	}
 	if got := lookupInstance(h.Uuid()); got != h {
 		t.Errorf("lookupInstance after re-Init: got %v, want %v", got, h)
+	}
+}
+
+func TestInitAdoptsExistingRegistryEntry(t *testing.T) {
+	cfg := &Config{
+		Addresses:   []string{"hz:5701"},
+		ClusterName: "adopt",
+		MapName:     "m",
+	}
+	first, fc := newProviderWithFake(t, cfg)
+	if err := first.Init(); err != nil {
+		t.Fatalf("first Init: %v", err)
+	}
+
+	second, err := New(cfg, nil, 0)
+	if err != nil {
+		t.Fatalf("New(second): %v", err)
+	}
+	dialCalls := 0
+	second.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
+		dialCalls++
+		return &fakeClient{}, &fakeMap{}, nil
+	}
+	if err := second.Init(); err != nil {
+		t.Fatalf("second Init: %v", err)
+	}
+	if dialCalls != 0 {
+		t.Errorf("second Init dialled %d times, want 0", dialCalls)
+	}
+	if got := lookupInstance(second.Uuid()); got != first {
+		t.Errorf("registry owner changed: got %v, want %v", got, first)
+	}
+
+	// Resetting the borrower must not shut the shared client down.
+	if err := second.Reset(); err != nil {
+		t.Fatalf("second Reset: %v", err)
+	}
+	if got := fc.shutdownCount(); got != 0 {
+		t.Errorf("Shutdown called %d times after borrower Reset, want 0", got)
+	}
+	if got := lookupInstance(first.Uuid()); got != first {
+		t.Errorf("borrower Reset evicted owner: got %v, want %v", got, first)
+	}
+
+	// Owner Reset still shuts the client down exactly once.
+	if err := first.Reset(); err != nil {
+		t.Fatalf("first Reset: %v", err)
+	}
+	if got := fc.shutdownCount(); got != 1 {
+		t.Errorf("Shutdown called %d times after owner Reset, want 1", got)
+	}
+	if got := lookupInstance(first.Uuid()); got != nil {
+		t.Errorf("owner Reset did not deregister: got %v, want nil", got)
+	}
+}
+
+func TestInitConnectorErrorReleasesRegistrySlot(t *testing.T) {
+	h, err := New(&Config{
+		Addresses:   []string{"hz:5701"},
+		ClusterName: "init-err-release",
+	}, nil, 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	boom := errors.New("hazelcast: boom")
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
+		return nil, nil, boom
+	}
+	if err := h.Init(); !errors.Is(err, boom) {
+		t.Fatalf("Init: err = %v, want %v", err, boom)
+	}
+	if got := lookupInstance(h.Uuid()); got != nil {
+		t.Errorf("registry still holds %v after failed Init", got)
+	}
+
+	// A subsequent successful Init on the same provider must be able to claim
+	// the slot again.
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
+		return &fakeClient{}, &fakeMap{}, nil
+	}
+	if err := h.Init(); err != nil {
+		t.Fatalf("retry Init: %v", err)
+	}
+	if got := lookupInstance(h.Uuid()); got != h {
+		t.Errorf("retry Init did not register provider: got %v, want %v", got, h)
+	}
+	if err := h.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+}
+
+func TestResetPreservesStateOnShutdownError(t *testing.T) {
+	h, err := New(&Config{
+		Addresses:   []string{"hz:5701"},
+		ClusterName: "reset-err",
+		MapName:     "m",
+	}, nil, 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	boom := errors.New("hazelcast: shutdown failed")
+	fc := &fakeClient{err: boom}
+	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
+		return fc, &fakeMap{}, nil
+	}
+	if err := h.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	if err := h.Reset(); !errors.Is(err, boom) {
+		t.Fatalf("Reset: err = %v, want %v", err, boom)
+	}
+
+	// State and registry entry must survive a failed shutdown so the caller
+	// can retry.
+	h.mu.Lock()
+	clientAfter := h.client
+	imapAfter := h.imap
+	h.mu.Unlock()
+	if clientAfter == nil || imapAfter == nil {
+		t.Errorf("Reset wiped state on shutdown failure: client=%v imap=%v", clientAfter, imapAfter)
+	}
+	if got := lookupInstance(h.Uuid()); got != h {
+		t.Errorf("Reset deregistered after shutdown failure: got %v, want %v", got, h)
+	}
+
+	// A retry once shutdown succeeds clears state cleanly.
+	fc.mu.Lock()
+	fc.err = nil
+	fc.mu.Unlock()
+	if err := h.Reset(); err != nil {
+		t.Fatalf("retry Reset: %v", err)
+	}
+	if got := lookupInstance(h.Uuid()); got != nil {
+		t.Errorf("retry Reset did not deregister: got %v, want nil", got)
 	}
 }
