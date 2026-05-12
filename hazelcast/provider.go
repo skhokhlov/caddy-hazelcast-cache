@@ -93,7 +93,7 @@ func New(cfg *Config, log logger.Logger, stale time.Duration) (*Hazelcast, error
 		cfg:       cfg,
 		stale:     stale,
 		logger:    log,
-		uuid:      computeUuid(cfg, stale),
+		uuid:      computeUUID(cfg, stale),
 		connector: defaultConnector,
 	}, nil
 }
@@ -104,46 +104,72 @@ func (h *Hazelcast) Name() string { return providerName }
 // Uuid returns a deterministic identifier derived from cluster name, map name
 // and the configured stale window. Two providers with identical configuration
 // share a Uuid and therefore the same instance-registry slot.
+//
+//revive:disable-next-line:var-naming // matches core.Storer interface signature
 func (h *Hazelcast) Uuid() string { return h.uuid }
 
 // Init connects the underlying Hazelcast client and registers this provider
-// in the instance registry. It is idempotent: a second call on an already
-// connected provider returns nil without reconnecting.
+// in the instance registry. It is idempotent on a single provider and, when
+// a different provider with the same Uuid is already registered (e.g. during
+// a Caddy reload where the new module is provisioned before the old one is
+// reset), it adopts the existing client instead of dialing a duplicate.
 func (h *Hazelcast) Init() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.imap != nil {
 		return nil
 	}
+	// Atomically claim the Uuid slot before dialing so concurrent inits with
+	// identical configuration cannot each open a live client.
+	if existing, loaded := instanceRegistry.LoadOrStore(h.uuid, h); loaded {
+		other := existing.(*Hazelcast)
+		if other != h {
+			other.mu.Lock()
+			h.client = other.client
+			h.imap = other.imap
+			other.mu.Unlock()
+		}
+		return nil
+	}
 	ctx, cancel := initContext(h.cfg)
 	defer cancel()
 	client, imap, err := h.connector(ctx, h.cfg, h.logger)
 	if err != nil {
+		instanceRegistry.CompareAndDelete(h.uuid, h)
 		return err
 	}
 	h.client = client
 	h.imap = imap
-	instanceRegistry.Store(h.uuid, h)
 	return nil
 }
 
 // Reset closes the underlying Hazelcast client and removes the provider from
 // the instance registry. After Reset, a subsequent Init reconnects.
+//
+// Only the registry's current owner shuts the client down; providers that
+// adopted an existing client in Init just drop their references. On shutdown
+// failure the provider's state and registry entry are kept intact so the
+// caller can retry.
 func (h *Hazelcast) Reset() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	client := h.client
-	h.client = nil
-	h.imap = nil
-	instanceRegistry.Delete(h.uuid)
-	if client == nil {
+	if h.client == nil {
+		return nil
+	}
+	owner, _ := instanceRegistry.Load(h.uuid)
+	if owner != h {
+		h.client = nil
+		h.imap = nil
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := client.Shutdown(ctx); err != nil {
+	if err := h.client.Shutdown(ctx); err != nil {
 		return fmt.Errorf("hazelcast: shutting down client: %w", err)
 	}
+	h.client = nil
+	h.imap = nil
+	instanceRegistry.CompareAndDelete(h.uuid, h)
 	return nil
 }
 
@@ -155,9 +181,9 @@ func initContext(cfg *Config) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), timeout)
 }
 
-func computeUuid(cfg *Config, stale time.Duration) string {
+func computeUUID(cfg *Config, stale time.Duration) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\x00%s\x00%d", cfg.ClusterName, cfg.MapName, int64(stale))
+	_, _ = fmt.Fprintf(h, "%s\x00%s\x00%d", cfg.ClusterName, cfg.MapName, int64(stale))
 	return hex.EncodeToString(h.Sum(nil))[:32]
 }
 
