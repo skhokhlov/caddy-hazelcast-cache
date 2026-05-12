@@ -84,10 +84,10 @@ func TestSetAppliesDurationPlusStale(t *testing.T) {
 		t.Fatal("entry not stored")
 	}
 	want := ttl + stale
-	min := before.Add(want)
-	max := after.Add(want)
-	if entry.expires.Before(min) || entry.expires.After(max) {
-		t.Errorf("expires = %v, want within [%v, %v] (ttl+stale=%v)", entry.expires, min, max, want)
+	earliest := before.Add(want)
+	latest := after.Add(want)
+	if entry.expires.Before(earliest) || entry.expires.After(latest) {
+		t.Errorf("expires = %v, want within [%v, %v] (ttl+stale=%v)", entry.expires, earliest, latest, want)
 	}
 }
 
