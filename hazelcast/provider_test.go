@@ -3,56 +3,25 @@ package hazelcast
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/hazelcast/hazelcast-go-client/logger"
-	"github.com/hazelcast/hazelcast-go-client/types"
 )
 
-type fakeMap struct{}
-
-func (f *fakeMap) Get(context.Context, any) (any, error)                          { return nil, nil }
-func (f *fakeMap) Set(context.Context, any, any) error                            { return nil }
-func (f *fakeMap) SetWithTTL(context.Context, any, any, time.Duration) error      { return nil }
-func (f *fakeMap) Remove(context.Context, any) (any, error)                       { return nil, nil }
-func (f *fakeMap) Lock(context.Context, any) error                                { return nil }
-func (f *fakeMap) Unlock(context.Context, any) error                              { return nil }
-func (f *fakeMap) GetKeySet(context.Context) ([]any, error)                       { return nil, nil }
-func (f *fakeMap) GetEntrySet(context.Context) ([]types.Entry, error)             { return nil, nil }
-
-type fakeClient struct {
-	mu        sync.Mutex
-	shutdowns int
-	err       error
-}
-
-func (f *fakeClient) Shutdown(context.Context) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.shutdowns++
-	return f.err
-}
-
-func (f *fakeClient) shutdownCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.shutdowns
-}
-
-func newProviderWithFake(t *testing.T, cfg *Config) (*Hazelcast, *fakeClient) {
+func newProviderWithFake(t *testing.T, cfg *Config) (*Hazelcast, *fakeClient, *fakeMap) {
 	t.Helper()
 	h, err := New(cfg, nil, 0)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	fc := &fakeClient{}
+	fm := newFakeMap()
 	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
-		return fc, &fakeMap{}, nil
+		return fc, fm, nil
 	}
 	t.Cleanup(func() { _ = h.Reset() })
-	return h, fc
+	return h, fc, fm
 }
 
 func TestProviderName(t *testing.T) {
@@ -102,7 +71,7 @@ func TestNewRejectsInvalidConfig(t *testing.T) {
 }
 
 func TestInitIdempotent(t *testing.T) {
-	h, _ := newProviderWithFake(t, &Config{
+	h, _, _ := newProviderWithFake(t, &Config{
 		Addresses:   []string{"hz:5701"},
 		ClusterName: "init-idem",
 		MapName:     "m",
@@ -110,7 +79,7 @@ func TestInitIdempotent(t *testing.T) {
 	calls := 0
 	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		calls++
-		return &fakeClient{}, &fakeMap{}, nil
+		return &fakeClient{}, newFakeMap(), nil
 	}
 	if err := h.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -144,7 +113,7 @@ func TestInitConnectorErrorPropagates(t *testing.T) {
 }
 
 func TestResetClosesClientAndDeregisters(t *testing.T) {
-	h, fc := newProviderWithFake(t, &Config{
+	h, fc, _ := newProviderWithFake(t, &Config{
 		Addresses:   []string{"hz:5701"},
 		ClusterName: "reset",
 		MapName:     "m",
@@ -167,7 +136,7 @@ func TestResetClosesClientAndDeregisters(t *testing.T) {
 }
 
 func TestResetWithoutInitIsNoop(t *testing.T) {
-	h, _ := newProviderWithFake(t, &Config{
+	h, _, _ := newProviderWithFake(t, &Config{
 		Addresses:   []string{"hz:5701"},
 		ClusterName: "reset-noop",
 	})
@@ -177,7 +146,7 @@ func TestResetWithoutInitIsNoop(t *testing.T) {
 }
 
 func TestProvisionAfterResetReconnects(t *testing.T) {
-	h, _ := newProviderWithFake(t, &Config{
+	h, _, _ := newProviderWithFake(t, &Config{
 		Addresses:   []string{"hz:5701"},
 		ClusterName: "reprov",
 		MapName:     "m",
@@ -185,7 +154,7 @@ func TestProvisionAfterResetReconnects(t *testing.T) {
 	calls := 0
 	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		calls++
-		return &fakeClient{}, &fakeMap{}, nil
+		return &fakeClient{}, newFakeMap(), nil
 	}
 	if err := h.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -210,7 +179,7 @@ func TestInitAdoptsExistingRegistryEntry(t *testing.T) {
 		ClusterName: "adopt",
 		MapName:     "m",
 	}
-	first, fc := newProviderWithFake(t, cfg)
+	first, fc, _ := newProviderWithFake(t, cfg)
 	if err := first.Init(); err != nil {
 		t.Fatalf("first Init: %v", err)
 	}
@@ -222,7 +191,7 @@ func TestInitAdoptsExistingRegistryEntry(t *testing.T) {
 	dialCalls := 0
 	second.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
 		dialCalls++
-		return &fakeClient{}, &fakeMap{}, nil
+		return &fakeClient{}, newFakeMap(), nil
 	}
 	if err := second.Init(); err != nil {
 		t.Fatalf("second Init: %v", err)
@@ -279,7 +248,7 @@ func TestInitConnectorErrorReleasesRegistrySlot(t *testing.T) {
 	// A subsequent successful Init on the same provider must be able to claim
 	// the slot again.
 	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
-		return &fakeClient{}, &fakeMap{}, nil
+		return &fakeClient{}, newFakeMap(), nil
 	}
 	if err := h.Init(); err != nil {
 		t.Fatalf("retry Init: %v", err)
@@ -304,7 +273,7 @@ func TestResetPreservesStateOnShutdownError(t *testing.T) {
 	boom := errors.New("hazelcast: shutdown failed")
 	fc := &fakeClient{err: boom}
 	h.connector = func(_ context.Context, _ *Config, _ logger.Logger) (hzClient, mapAPI, error) {
-		return fc, &fakeMap{}, nil
+		return fc, newFakeMap(), nil
 	}
 	if err := h.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
